@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "name": "XHS-FB",
+  "version": "0.4.39",
+  "platform": "Windows 10/11 x64",
+  "archive": "XHS-FB-0.4.39-Windows-x64.zip",
+  "archiveBytes": 354288209,
+  "sha256": "73adecef5cc13385a32624b3f0dc763f9e50abac117a7c406418eb8e28550252",
+  "browser": {
+    "family": "ungoogled-chromium-windows",
+    "project": "ungoogled-software/ungoogled-chromium-windows",
+    "version": "151.0.7922.71",
+    "releaseTag": "151.0.7922.71-1.1",
+    "architecture": "windows-x64",
+    "sourceUrl": "https://github.com/ungoogled-software/ungoogled-chromium-windows/releases/download/151.0.7922.71-1.1/ungoogled-chromium_151.0.7922.71-1.1_windows_x64.zip",
+    "upstreamArchiveBytes": 196708973,
+    "sha256": "f49303e9b61aab632e399a12c36b72b184158e965b6d6373105f19f2e884fd6e",
+    "upstreamArchiveSha256": "f49303e9b61aab632e399a12c36b72b184158e965b6d6373105f19f2e884fd6e",
+    "runtimeManifestSha256": "2977bc52f1aa6e8276332c6e673c7722cef51f3ed0cc98a0ac241b6046f19f25",
+    "compatibilityVerified": [
+      "persistent profile",
+      "file upload",
+      "Playwright automation"
+    ]
+  },
+  "privateDataIncluded": false,
+  "firstRun": [
+    "登录小红书账号",
+    "按需配置 AI API Key"
+  ]
+}

@@ -1,0 +1,44 @@
+# Release binaries belong in GitHub Releases, never in Git history.
+*.exe
+*.msi
+*.zip
+*.7z
+*.blockmap
+
+# Private runtime data and credentials.
+profiles/
+runtime-data/
+User Data/
+Cookies
+Login Data
+Local State
+Network/
+logs/
+ai-settings.json
+account-registry.json
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.pem
+*.key
+*.pfx
+*.p12
+.env
+.env.*
+
+# Local tooling output.
+.playwright-cli/
+output/
+artifacts/
+release/
+browser/
+resources/browser/
+win-unpacked/
+dist/
+*.dll
+*.node
+*.pak
+*.bin
+Thumbs.db
+.DS_Store

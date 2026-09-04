@@ -1,0 +1,58 @@
+# XHS-FB
+
+XHS-FB 是面向 Windows 10/11 x64 的小红书图文发布桌面工具。本仓库只用于公开发布经过校验的便携成品；程序运行环境、发布自动化组件和专用开源浏览器都放在同一个压缩包中。
+
+## 下载与使用
+
+1. 打开本仓库右侧的 **Releases**，下载最新版 `XHS-FB-0.4.39-Windows-x64.zip`。
+2. 同时下载同名 `.sha256` 文件和 `release-manifest.json`。
+3. 在 PowerShell 中运行 `Get-FileHash .\XHS-FB-0.4.39-Windows-x64.zip -Algorithm SHA256`，确认结果与校验文件及发布清单一致。
+4. 将压缩包完整解压到一个可写目录；不要直接在压缩包预览窗口中运行。
+5. 双击解压目录中的 `XHS-FB.exe`。
+
+目标电脑不需要另行安装 Node.js、npm、Electron、Playwright 或 Chrome，也不需要运行开发命令。请保留解压后的完整目录，不要只复制单个 EXE。
+
+## 首次启动仍需完成
+
+- 在软件打开的专用浏览器中登录自己的小红书账号。
+- 如需 AI 文案或图片功能，在设置中填写自己拥有的 API Key。
+- 正式批量发布前，先用一条已人工检查的任务验证当前账号和小红书网页状态。
+
+登录资料和本机设置会在新电脑上重新建立。便携包不会替你迁移旧电脑的账号会话或私密配置。
+
+## 包内运行组件
+
+- XHS-FB 0.4.39 Windows x64 桌面程序
+- Electron 与 Node.js 桌面运行组件
+- Playwright 发布自动化组件
+- `ungoogled-chromium-windows` 151.0.7922.71-1.1 x64 专用浏览器
+- 第三方许可证、来源和校验资料
+
+内置浏览器来自 `ungoogled-software/ungoogled-chromium-windows` 项目的正式 GitHub Release，而不是开发电脑上的 Chrome。使用的上游压缩包为 `ungoogled-chromium_151.0.7922.71-1.1_windows_x64.zip`，SHA-256 为 `f49303e9b61aab632e399a12c36b72b184158e965b6d6373105f19f2e884fd6e`。
+
+该浏览器与 XHS-FB 的自动化流程一起完成便携包验证。这里的“兼容”表示实际打包组合已经过检查，不表示它与 Playwright 自带的浏览器文件逐字节相同。完整来源见 [THIRD_PARTY_SOURCES.md](THIRD_PARTY_SOURCES.md)。
+
+专用浏览器使用 XHS-FB 自己的资料目录，不读取日常 Chrome 的 Cookie 或 User Data。另一台电脑上的账号资料、任务和设置默认保存在该 Windows 用户的 `%LOCALAPPDATA%\XHS-FB` 中。
+
+## 隐私边界
+
+公开仓库和公开下载包不包含开发电脑上的：
+
+- 小红书 Cookie、登录 Profile、密码或账号会话
+- AI API Key、访问令牌或其他凭证
+- 商品图片、生成图片、个人素材或媒体文件
+- 任务数据库、草稿、发布记录或运行日志
+
+首次换机使用必须由本人登录账号并配置所需服务。不要把 `%LOCALAPPDATA%\XHS-FB` 或任何浏览器 Profile 重新打包后公开上传。
+
+## Windows SmartScreen
+
+当前便携包未承诺代码签名。Windows SmartScreen 可能显示“Windows 已保护你的电脑”。遇到提示时，请先核对发布页、版本号和 SHA-256；确认下载来源无误后，再选择“更多信息”继续运行。若校验值不一致，请删除文件并停止运行。
+
+## 平台说明
+
+小红书商家网页可能改版。若软件显示“需人工核验”，请先到笔记管理页确认远端状态，避免重复提交。首次在新电脑使用或更新版本后，建议先执行一条测试任务。
+
+## 授权说明
+
+本仓库公开可见是为了分发成品，不代表授予 XHS-FB 源代码或程序的开源许可。包内第三方组件继续遵循各自的许可证与使用条款；第三方项目的公开许可证不改变 XHS-FB 本体的授权状态。

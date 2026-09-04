@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "name": "XHS-FB",
-  "version": "0.4.39",
+  "version": "0.4.40",
   "platform": "Windows 10/11 x64",
-  "archive": "XHS-FB-0.4.39-Windows-x64.zip",
-  "archiveBytes": 354288209,
-  "sha256": "73adecef5cc13385a32624b3f0dc763f9e50abac117a7c406418eb8e28550252",
+  "archive": "XHS-FB-0.4.40-Windows-x64.zip",
+  "archiveBytes": 354314804,
+  "sha256": "caffaeddd8f0daeab5b7dca97384667614575359f2da85ed3b54196c2c5c37cc",
   "browser": {
     "family": "ungoogled-chromium-windows",
     "project": "ungoogled-software/ungoogled-chromium-windows",

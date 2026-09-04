@@ -4,9 +4,9 @@ XHS-FB 是面向 Windows 10/11 x64 的小红书图文发布桌面工具。本仓
 
 ## 下载与使用
 
-1. 打开本仓库右侧的 **Releases**，下载最新版 `XHS-FB-0.4.39-Windows-x64.zip`。
+1. 打开本仓库右侧的 **Releases**，下载最新版 `XHS-FB-0.4.40-Windows-x64.zip`。
 2. 同时下载同名 `.sha256` 文件和 `release-manifest.json`。
-3. 在 PowerShell 中运行 `Get-FileHash .\XHS-FB-0.4.39-Windows-x64.zip -Algorithm SHA256`，确认结果与校验文件及发布清单一致。
+3. 在 PowerShell 中运行 `Get-FileHash .\XHS-FB-0.4.40-Windows-x64.zip -Algorithm SHA256`，确认结果与校验文件及发布清单一致。
 4. 将压缩包完整解压到一个可写目录；不要直接在压缩包预览窗口中运行。
 5. 双击解压目录中的 `XHS-FB.exe`。
 
@@ -20,9 +20,15 @@ XHS-FB 是面向 Windows 10/11 x64 的小红书图文发布桌面工具。本仓
 
 登录资料和本机设置会在新电脑上重新建立。便携包不会替你迁移旧电脑的账号会话或私密配置。
 
+## 软件更新
+
+`0.4.40` 是首个带应用内更新功能的版本，因此从 `0.4.39` 升级到本版仍需手动下载一次。以后可在“设置 > 软件更新”中检查稳定版、后台下载并校验完整更新包，再由用户主动选择退出安装。
+
+安装会等待发布与图片生成任务结束，只替换便携程序目录，不覆盖任务、账号、素材、AI 设置或专用浏览器 Profile；新版启动检查失败时会自动恢复并重新打开旧版。
+
 ## 包内运行组件
 
-- XHS-FB 0.4.39 Windows x64 桌面程序
+- XHS-FB 0.4.40 Windows x64 桌面程序
 - Electron 与 Node.js 桌面运行组件
 - Playwright 发布自动化组件
 - `ungoogled-chromium-windows` 151.0.7922.71-1.1 x64 专用浏览器

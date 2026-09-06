@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "name": "XHS-FB",
-  "version": "0.4.41",
+  "version": "0.4.43",
   "platform": "Windows 10/11 x64",
-  "archive": "XHS-FB-0.4.41-Windows-x64.zip",
-  "archiveBytes": 354316351,
-  "sha256": "ab0a25456ce44a74891f9410869986d7f7993c2023b0a6f6acea1c33cda348d9",
+  "archive": "XHS-FB-0.4.43-Windows-x64.zip",
+  "archiveBytes": 354321364,
+  "sha256": "f07864fa02897a9d6c0360449af3618d0e4644942d557117c1f14fb6f8b0db00",
   "browser": {
     "family": "ungoogled-chromium-windows",
     "project": "ungoogled-software/ungoogled-chromium-windows",
@@ -27,5 +27,10 @@
   "firstRun": [
     "登录小红书账号",
     "按需配置 AI API Key"
-  ]
+  ],
+  "signature": {
+    "algorithm": "Ed25519",
+    "keyId": "xhs-update-ed25519-v1",
+    "value": "qYbJ1EW4/kSU+XlwJlNB5qLxRnOl6s/9+TAmf8ukrQ5UEInfhtxjB4Oqupl1VTGr/YHji1tP2K9iFLOoKfY8Bg=="
+  }
 }

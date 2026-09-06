@@ -190,165 +190,600 @@ jobs:
     name: Verify published Release assets
     if: github.event_name == 'release' && github.event.action == 'published'
     needs: verify-public-repository
-    runs-on: windows-latest
-    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ github.event.release.tag_name }}
+      RELEASE_ID: ${{ github.event.release.id }}
     steps:
-      - name: Download the actual published assets
-        shell: pwsh
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact portable and installer asset sets
+        shell: python
         run: |
-          $ErrorActionPreference = "Stop"
-          $PSNativeCommandUseErrorActionPreference = $false
-          $assetDir = Join-Path $env:RUNNER_TEMP "xhs-fb-release-assets"
-          New-Item -ItemType Directory -Path $assetDir -Force | Out-Null
+          import base64
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import stat
+          import subprocess
+          import tempfile
+          import time
+          import zipfile
 
-          $downloaded = $false
-          foreach ($attempt in 1..5) {
-            Get-ChildItem -LiteralPath $assetDir -File -ErrorAction SilentlyContinue |
-              Remove-Item -Force
-            gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --dir $assetDir --pattern "XHS-FB-*-Windows-x64.zip" --pattern "XHS-FB-*-Windows-x64.zip.sha256" --pattern "release-manifest.json" --clobber
-            $archiveCount = @(Get-ChildItem -LiteralPath $assetDir -File |
-              Where-Object { $_.Name -match '^XHS-FB-\d+\.\d+\.\d+-Windows-x64\.zip$' }).Count
-            $checksumCount = @(Get-ChildItem -LiteralPath $assetDir -File |
-              Where-Object { $_.Name -match '^XHS-FB-\d+\.\d+\.\d+-Windows-x64\.zip\.sha256$' }).Count
-            $manifestCount = @(Get-ChildItem -LiteralPath $assetDir -File |
-              Where-Object { $_.Name -eq 'release-manifest.json' }).Count
-            if ($LASTEXITCODE -eq 0 -and $archiveCount -eq 1 -and
-                $checksumCount -eq 1 -and $manifestCount -eq 1) {
-              $downloaded = $true
-              break
-            }
-            Start-Sleep -Seconds 15
-          }
-          if (-not $downloaded) {
-            throw "Unable to download all required Release assets."
-          }
-          "ASSET_DIR=$assetDir" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - name: Verify archive, checksums, manifest, and portable layout
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $archives = @(Get-ChildItem -LiteralPath $env:ASSET_DIR -File |
-            Where-Object { $_.Name -match '^XHS-FB-\d+\.\d+\.\d+-Windows-x64\.zip$' })
-          $checksums = @(Get-ChildItem -LiteralPath $env:ASSET_DIR -File |
-            Where-Object { $_.Name -match '^XHS-FB-\d+\.\d+\.\d+-Windows-x64\.zip\.sha256$' })
-          $manifests = @(Get-ChildItem -LiteralPath $env:ASSET_DIR -File |
-            Where-Object { $_.Name -eq 'release-manifest.json' })
-
-          if ($archives.Count -ne 1) {
-            throw "Expected exactly one XHS-FB Windows x64 ZIP."
-          }
-          if ($checksums.Count -ne 1) {
-            throw "Expected exactly one matching .sha256 file."
-          }
-          if ($manifests.Count -ne 1) {
-            throw "Expected exactly one release-manifest.json."
-          }
-
-          $archive = $archives[0]
-          $checksumFile = $checksums[0]
-          $manifest = Get-Content -LiteralPath $manifests[0].FullName -Raw |
-            ConvertFrom-Json
-
-          foreach ($field in @(
-            "name", "version", "platform", "archive", "sha256",
-            "browser", "privateDataIncluded"
-          )) {
-            if ($null -eq $manifest.PSObject.Properties[$field]) {
-              throw "Release manifest is missing $field."
-            }
-          }
-          if ([string]$manifest.name -ne "XHS-FB") {
-            throw "Release manifest name must be XHS-FB."
-          }
-          if ([string]$manifest.platform -notin @(
-            "Windows 10/11 x64", "windows-x64"
-          )) {
-            throw "Release manifest platform must be Windows x64."
-          }
-          if ([string]$manifest.version -notmatch '^\d+\.\d+\.\d+$') {
-            throw "Release manifest version is invalid."
-          }
-          if ($env:RELEASE_TAG -ne "v$($manifest.version)") {
-            throw "Release tag does not match manifest version."
-          }
-          $expectedArchive = "XHS-FB-$($manifest.version)-Windows-x64.zip"
-          if ($archive.Name -ne $expectedArchive -or
-              [string]$manifest.archive -ne $expectedArchive) {
-            throw "Archive name does not match the release manifest."
-          }
-          if ($checksumFile.Name -ne "$expectedArchive.sha256") {
-            throw "Checksum asset name does not match the archive."
-          }
-          if (($manifest.privateDataIncluded -isnot [bool]) -or
-              $manifest.privateDataIncluded) {
-            throw "Release manifest must declare privateDataIncluded=false."
-          }
-
-          $actualHash = (Get-FileHash -LiteralPath $archive.FullName -Algorithm SHA256).
-            Hash.ToLowerInvariant()
-          $manifestHash = ([string]$manifest.sha256).ToLowerInvariant()
-          $checksumText = Get-Content -LiteralPath $checksumFile.FullName -Raw
-          $checksumMatch = [regex]::Match(
-            $checksumText,
-            '(?i)(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])'
+          MAX_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024
+          MAX_MANIFEST_BYTES = 128 * 1024
+          MAX_CHECKSUM_BYTES = 4 * 1024
+          MAX_UNPACKED_BYTES = 4 * 1024 * 1024 * 1024
+          SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+          VERSION_PATTERN = re.compile(
+              r"v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))"
           )
-          if (-not $checksumMatch.Success) {
-            throw "Checksum asset does not contain a SHA-256 value."
+          SIGNED_RELEASE_MINIMUM = (0, 4, 42)
+          SIGNATURE_KEY_ID = "xhs-update-ed25519-v1"
+          SIGNATURE_PATTERN = re.compile(r"[A-Za-z0-9+/]{86}==")
+          PUBLIC_KEY_SPKI_BASE64 = (
+              "MCowBQYDK2VwAyEAdRaXyrRlXbd53qDIMhWJR//aIIvMGKR8rEpJOuKO6b8="
+          )
+          SIGNATURE_DOMAINS = {
+              "portable": "XHS-FB/release-manifest/v1",
+              "installer": "XHS-Publisher/installer-update-manifest/v1",
           }
-          $checksumHash = $checksumMatch.Value.ToLowerInvariant()
-          if ($actualHash -ne $manifestHash -or $actualHash -ne $checksumHash) {
-            throw "Published ZIP SHA-256 does not match all declared values."
+          NODE_VERIFY_SCRIPT = r"""
+          const { createPublicKey, verify } = require("node:crypto");
+          const [, publicKeyBase64, domain, manifestBase64] = process.argv;
+          const manifest = JSON.parse(Buffer.from(manifestBase64, "base64").toString("utf8"));
+          const canonicalizeJson = (value) => {
+            if (value === null) return "null";
+            if (typeof value === "boolean" || typeof value === "string") {
+              return JSON.stringify(value);
+            }
+            if (typeof value === "number") {
+              if (!Number.isSafeInteger(value)) process.exit(4);
+              return JSON.stringify(value);
+            }
+            if (Array.isArray(value)) {
+              return `[${value.map((entry) => canonicalizeJson(entry)).join(",")}]`;
+            }
+            if (typeof value === "object") {
+              const prototype = Object.getPrototypeOf(value);
+              if (prototype !== Object.prototype && prototype !== null) process.exit(5);
+              const entries = Object.keys(value)
+                .sort()
+                .map((key) => {
+                  if (value[key] === undefined) process.exit(6);
+                  return `${JSON.stringify(key)}:${canonicalizeJson(value[key])}`;
+                });
+              return `{${entries.join(",")}}`;
+            }
+            process.exit(7);
+          };
+          const unsigned = Object.fromEntries(
+            Object.entries(manifest).filter(([key]) => key !== "signature"),
+          );
+          const payload = Buffer.from(`${domain}\0${canonicalizeJson(unsigned)}`, "utf8");
+          const publicKey = createPublicKey({
+            key: Buffer.from(publicKeyBase64, "base64"),
+            format: "der",
+            type: "spki",
+          });
+          if (publicKey.asymmetricKeyType !== "ed25519") process.exit(2);
+          const valid = verify(
+            null,
+            payload,
+            publicKey,
+            Buffer.from(manifest.signature.value, "base64"),
+          );
+          process.exit(valid ? 0 : 3);
+          """
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          release_tag = os.environ["RELEASE_TAG"]
+          release_id = int(os.environ["RELEASE_ID"])
+          version_match = VERSION_PATTERN.fullmatch(release_tag)
+          if version_match is None:
+              raise SystemExit("Release tag must use v<major.minor.patch>.")
+          version = version_match.group(1)
+          if any(int(part) > 2_147_483_647 for part in version.split(".")):
+              raise SystemExit("Release version component is out of range.")
+          version_tuple = tuple(int(part) for part in version.split("."))
+          if version_tuple < SIGNED_RELEASE_MINIMUM:
+              print(
+                  f"Release {release_tag} predates the signed six-asset protocol; "
+                  "the historical Release remains unchanged."
+              )
+              raise SystemExit(0)
+
+          portable_archive = f"XHS-FB-{version}-Windows-x64.zip"
+          portable_checksum = f"{portable_archive}.sha256"
+          installer = f"XHS-Publisher-{version}-x64.exe"
+          installer_checksum = f"{installer}.sha256"
+          expected_names = {
+              "release-manifest.json",
+              portable_archive,
+              portable_checksum,
+              "installer-update-manifest.json",
+              installer,
+              installer_checksum,
           }
 
-          $browser = $manifest.browser
-          $expectedBrowser = @{
-            family = "ungoogled-chromium-windows"
-            version = "151.0.7922.71"
-            architecture = "windows-x64"
-            sourceUrl = "https://github.com/ungoogled-software/ungoogled-chromium-windows/releases/download/151.0.7922.71-1.1/ungoogled-chromium_151.0.7922.71-1.1_windows_x64.zip"
-            sha256 = "f49303e9b61aab632e399a12c36b72b184158e965b6d6373105f19f2e884fd6e"
-          }
-          foreach ($field in $expectedBrowser.Keys) {
-            if ([string]$browser.$field -ne $expectedBrowser[$field]) {
-              throw "Release manifest browser.$field is invalid."
-            }
-          }
+          def gh_release():
+              output = subprocess.check_output(
+                  [
+                      "gh", "api",
+                      f"repos/{repository}/releases/{release_id}",
+                  ],
+                  text=True,
+              )
+              return json.loads(output)
 
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $zip = [System.IO.Compression.ZipFile]::OpenRead($archive.FullName)
-          try {
-            $entries = @($zip.Entries | ForEach-Object {
-              $_.FullName.Replace("\", "/")
-            })
-            if (-not ($entries | Where-Object {
-              $_ -match '(^|/)XHS-FB\.exe$'
-            })) {
-              throw "Published ZIP does not contain XHS-FB.exe."
-            }
-            if (-not ($entries | Where-Object {
-              $_ -match '(^|/)resources/browser/chrome\.exe$'
-            })) {
-              throw "Published ZIP does not contain the bundled browser."
-            }
-            $privateEntryPattern = (
-              '(^|/)(User Data|profiles?|runtime-data|generated-images|logs|' +
-              'Cookies|Login Data|Local State|ai-settings\.json|' +
-              'account-registry\.json|media-index\.json|' +
-              '.*\.sqlite(?:-.*)?|.*\.db(?:-.*)?)($|/)'
-            )
-            $privateEntries = @($entries | Where-Object {
-              $_ -match $privateEntryPattern
-            })
-            if ($privateEntries.Count -gt 0) {
-              throw "Published ZIP contains a private-data path: $($privateEntries[0])"
-            }
-          } finally {
-            $zip.Dispose()
-          }
+          def validate_release(release):
+              if release.get("id") != release_id:
+                  raise SystemExit("Release API response has the wrong ID.")
+              if release.get("tag_name") != release_tag:
+                  raise SystemExit("Release API tag does not match the event tag.")
+              if release.get("name") != f"XHS-FB {version}":
+                  raise SystemExit("Release name must be XHS-FB <version>.")
+              if release.get("draft") is not False:
+                  raise SystemExit("Draft Releases are not accepted.")
+              if release.get("prerelease") is not False:
+                  raise SystemExit("Prerelease Releases are not accepted.")
+              raw_assets = release.get("assets")
+              if not isinstance(raw_assets, list):
+                  raise SystemExit("Release assets must be an array.")
+              assets = {}
+              for item in raw_assets:
+                  if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+                      raise SystemExit("Release contains malformed asset metadata.")
+                  name = item["name"]
+                  if name in assets:
+                      raise SystemExit(f"Release contains duplicate asset name: {name}")
+                  size = item.get("size")
+                  if type(size) is not int or not 0 < size <= MAX_ARTIFACT_BYTES:
+                      raise SystemExit(f"Release asset has an invalid size: {name}")
+                  if item.get("state") != "uploaded":
+                      raise SystemExit(f"Release asset is not fully uploaded: {name}")
+                  assets[name] = item
+              actual_names = set(assets)
+              if actual_names != expected_names:
+                  missing = sorted(expected_names - actual_names)
+                  extra = sorted(actual_names - expected_names)
+                  raise SystemExit(
+                      "Release must contain exactly the six approved assets; "
+                      f"missing={missing}, extra={extra}"
+                  )
+              return assets
 
-          Write-Host "Verified published asset: $($archive.Name)"
-          Write-Host "SHA-256: $actualHash"
+          def metadata_fingerprint(assets):
+              return sorted(
+                  (
+                      name,
+                      item.get("id"),
+                      item["size"],
+                      item.get("state"),
+                      item.get("updated_at"),
+                      item.get("digest"),
+                  )
+                  for name, item in assets.items()
+              )
+
+          assets_before = validate_release(gh_release())
+          fingerprint_before = metadata_fingerprint(assets_before)
+
+          asset_dir = None
+          last_error = ""
+          for attempt in range(1, 6):
+              candidate = pathlib.Path(
+                  tempfile.mkdtemp(
+                      prefix=f"xhs-fb-release-{release_id}-",
+                      dir=os.environ["RUNNER_TEMP"],
+                  )
+              )
+              completed = subprocess.run(
+                  [
+                      "gh", "release", "download", release_tag,
+                      "--repo", repository,
+                      "--dir", str(candidate),
+                  ],
+                  text=True,
+                  capture_output=True,
+                  check=False,
+              )
+              downloaded_names = {entry.name for entry in candidate.iterdir()}
+              if completed.returncode == 0 and downloaded_names == expected_names:
+                  asset_dir = candidate
+                  break
+              last_error = (completed.stderr or completed.stdout).strip()
+              if attempt < 5:
+                  time.sleep(15)
+          if asset_dir is None:
+              raise SystemExit(
+                  "Unable to download exactly the six approved Release assets. "
+                  + last_error[-2000:]
+              )
+
+          assets_after = validate_release(gh_release())
+          if metadata_fingerprint(assets_after) != fingerprint_before:
+              raise SystemExit("Release assets changed while verification was running.")
+          assets = assets_after
+
+          paths = {name: asset_dir / name for name in expected_names}
+          for name, path in paths.items():
+              if path.is_symlink() or not path.is_file():
+                  raise SystemExit(f"Downloaded asset is not a regular file: {name}")
+              if path.stat().st_size != assets[name]["size"]:
+                  raise SystemExit(f"Downloaded size differs from GitHub metadata: {name}")
+
+          class DuplicateJsonKey(ValueError):
+              pass
+
+          def reject_non_json_constant(value):
+              raise DuplicateJsonKey(f"non-JSON numeric constant: {value}")
+
+          def reject_duplicate_keys(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise DuplicateJsonKey(f"duplicate JSON key: {key}")
+                  result[key] = value
+              return result
+
+          def read_small(path, limit, label):
+              data = path.read_bytes()
+              if not 0 < len(data) <= limit:
+                  raise SystemExit(f"{label} has an invalid size.")
+              return data
+
+          def parse_manifest_bytes(data, label):
+              try:
+                  value = json.loads(
+                      data.decode("utf-8"),
+                      object_pairs_hook=reject_duplicate_keys,
+                      parse_constant=reject_non_json_constant,
+                  )
+              except (UnicodeDecodeError, json.JSONDecodeError, DuplicateJsonKey) as error:
+                  raise SystemExit(f"{label} is not strict UTF-8 JSON: {error}") from error
+              if not isinstance(value, dict):
+                  raise SystemExit(f"{label} must contain a JSON object.")
+              return value
+
+          def load_manifest(name):
+              return parse_manifest_bytes(
+                  read_small(paths[name], MAX_MANIFEST_BYTES, name),
+                  name,
+              )
+
+          def exact_keys(value, expected, label):
+              if not isinstance(value, dict):
+                  raise SystemExit(f"{label} must be an object.")
+              actual = set(value)
+              expected = set(expected)
+              if actual != expected:
+                  raise SystemExit(
+                      f"{label} keys are invalid; "
+                      f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
+                  )
+
+          def positive_integer(value, maximum, label):
+              if type(value) is not int or not 0 < value <= maximum:
+                  raise SystemExit(f"{label} must be a positive bounded integer.")
+
+          def sha256_value(value, label):
+              if not isinstance(value, str) or SHA256_PATTERN.fullmatch(value) is None:
+                  raise SystemExit(f"{label} must be 64 lowercase hexadecimal characters.")
+
+          def string_list(value, label, minimum=0):
+              if (
+                  not isinstance(value, list)
+                  or not minimum <= len(value) <= 20
+                  or any(
+                      not isinstance(item, str) or not 1 <= len(item) <= 200
+                      for item in value
+                  )
+              ):
+                  raise SystemExit(f"{label} must be a bounded string array.")
+
+          def canonical_base64(value, pattern, expected_bytes, label):
+              if not isinstance(value, str) or pattern.fullmatch(value) is None:
+                  raise SystemExit(f"{label} is not canonical Base64.")
+              try:
+                  decoded = base64.b64decode(value, validate=True)
+              except ValueError as error:
+                  raise SystemExit(f"{label} is not canonical Base64.") from error
+              if (
+                  len(decoded) != expected_bytes
+                  or base64.b64encode(decoded).decode("ascii") != value
+              ):
+                  raise SystemExit(f"{label} has an invalid canonical length.")
+              return decoded
+
+          def verify_manifest_signature(manifest, kind, label):
+              signature = manifest.get("signature")
+              exact_keys(
+                  signature,
+                  {"algorithm", "keyId", "value"},
+                  f"{label} signature",
+              )
+              if signature["algorithm"] != "Ed25519":
+                  raise SystemExit(f"{label} signature algorithm must be Ed25519.")
+              if signature["keyId"] != SIGNATURE_KEY_ID:
+                  raise SystemExit(f"{label} signature keyId is invalid.")
+              canonical_base64(
+                  signature["value"],
+                  SIGNATURE_PATTERN,
+                  64,
+                  f"{label} signature value",
+              )
+              manifest_bytes = json.dumps(
+                  manifest,
+                  ensure_ascii=False,
+                  separators=(",", ":"),
+                  allow_nan=False,
+              ).encode("utf-8")
+              completed = subprocess.run(
+                  [
+                      "node",
+                      "-e",
+                      NODE_VERIFY_SCRIPT,
+                      PUBLIC_KEY_SPKI_BASE64,
+                      SIGNATURE_DOMAINS[kind],
+                      base64.b64encode(manifest_bytes).decode("ascii"),
+                  ],
+                  text=True,
+                  capture_output=True,
+                  check=False,
+              )
+              if completed.returncode != 0:
+                  raise SystemExit(f"{label} Ed25519 signature verification failed.")
+
+          portable_asset_bytes = read_small(
+              paths["release-manifest.json"],
+              MAX_MANIFEST_BYTES,
+              "release-manifest.json",
+          )
+          root_manifest_path = pathlib.Path("release-manifest.json")
+          if root_manifest_path.is_symlink() or not root_manifest_path.is_file():
+              raise SystemExit("The tagged repository must contain release-manifest.json.")
+          root_manifest_bytes = read_small(
+              root_manifest_path,
+              MAX_MANIFEST_BYTES,
+              "tagged repository release-manifest.json",
+          )
+          parse_manifest_bytes(
+              root_manifest_bytes,
+              "tagged repository release-manifest.json",
+          )
+          if root_manifest_bytes != portable_asset_bytes:
+              raise SystemExit(
+                  "The tagged repository release-manifest.json must be byte-for-byte "
+                  "identical to the published Release asset."
+              )
+          portable = parse_manifest_bytes(
+              portable_asset_bytes,
+              "release-manifest.json",
+          )
+          exact_keys(
+              portable,
+              {
+                  "schemaVersion", "name", "version", "platform", "archive",
+                  "archiveBytes", "sha256", "browser", "privateDataIncluded",
+                  "firstRun", "signature",
+              },
+              "release-manifest.json",
+          )
+          if type(portable["schemaVersion"]) is not int or portable["schemaVersion"] != 1:
+              raise SystemExit("Portable manifest schemaVersion must be 1.")
+          if portable["name"] != "XHS-FB":
+              raise SystemExit("Portable manifest name must be XHS-FB.")
+          if portable["version"] != version:
+              raise SystemExit("Portable manifest version does not match the Release tag.")
+          if portable["platform"] != "Windows 10/11 x64":
+              raise SystemExit("Portable manifest platform is invalid.")
+          if portable["archive"] != portable_archive:
+              raise SystemExit("Portable manifest archive name is invalid.")
+          positive_integer(
+              portable["archiveBytes"], MAX_ARTIFACT_BYTES,
+              "Portable manifest archiveBytes",
+          )
+          sha256_value(portable["sha256"], "Portable manifest sha256")
+          if portable["privateDataIncluded"] is not False:
+              raise SystemExit("Portable manifest must declare privateDataIncluded=false.")
+          string_list(portable["firstRun"], "Portable manifest firstRun")
+
+          browser = portable["browser"]
+          exact_keys(
+              browser,
+              {
+                  "family", "project", "version", "releaseTag", "architecture",
+                  "sourceUrl", "upstreamArchiveBytes", "sha256",
+                  "upstreamArchiveSha256", "runtimeManifestSha256",
+                  "compatibilityVerified",
+              },
+              "Portable manifest browser",
+          )
+          expected_browser = {
+              "family": "ungoogled-chromium-windows",
+              "project": "ungoogled-software/ungoogled-chromium-windows",
+              "version": "151.0.7922.71",
+              "releaseTag": "151.0.7922.71-1.1",
+              "architecture": "windows-x64",
+              "sourceUrl": (
+                  "https://github.com/ungoogled-software/"
+                  "ungoogled-chromium-windows/releases/download/151.0.7922.71-1.1/"
+                  "ungoogled-chromium_151.0.7922.71-1.1_windows_x64.zip"
+              ),
+              "upstreamArchiveBytes": 196708973,
+              "sha256": (
+                  "f49303e9b61aab632e399a12c36b72b184158e965b6d6373105f19f2e884fd6e"
+              ),
+              "upstreamArchiveSha256": (
+                  "f49303e9b61aab632e399a12c36b72b184158e965b6d6373105f19f2e884fd6e"
+              ),
+          }
+          for field, expected in expected_browser.items():
+              if browser[field] != expected:
+                  raise SystemExit(f"Portable manifest browser.{field} is invalid.")
+          sha256_value(
+              browser["runtimeManifestSha256"],
+              "Portable manifest browser.runtimeManifestSha256",
+          )
+          string_list(
+              browser["compatibilityVerified"],
+              "Portable manifest browser.compatibilityVerified",
+              minimum=1,
+          )
+          verify_manifest_signature(
+              portable,
+              "portable",
+              "release-manifest.json",
+          )
+
+          installed = load_manifest("installer-update-manifest.json")
+          exact_keys(
+              installed,
+              {
+                  "schemaVersion", "dataSchemaVersion", "name", "product",
+                  "version", "platform", "installer", "installerBytes", "sha256",
+                  "privateDataIncluded", "firstRun", "signature",
+              },
+              "installer-update-manifest.json",
+          )
+          if type(installed["schemaVersion"]) is not int or installed["schemaVersion"] != 1:
+              raise SystemExit("Installer manifest schemaVersion must be 1.")
+          if (
+              type(installed["dataSchemaVersion"]) is not int
+              or installed["dataSchemaVersion"] != 4
+          ):
+              raise SystemExit("Installer manifest dataSchemaVersion must be 4.")
+          if installed["name"] != "XHS-Publisher" or installed["product"] != "XHS-Publisher":
+              raise SystemExit("Installer manifest name and product must be XHS-Publisher.")
+          if installed["version"] != version:
+              raise SystemExit("Installer manifest version does not match the Release tag.")
+          if installed["platform"] != "Windows 10/11 x64":
+              raise SystemExit("Installer manifest platform is invalid.")
+          if installed["installer"] != installer:
+              raise SystemExit("Installer manifest asset name is invalid.")
+          positive_integer(
+              installed["installerBytes"], MAX_ARTIFACT_BYTES,
+              "Installer manifest installerBytes",
+          )
+          sha256_value(installed["sha256"], "Installer manifest sha256")
+          if installed["privateDataIncluded"] is not False:
+              raise SystemExit("Installer manifest must declare privateDataIncluded=false.")
+          string_list(installed["firstRun"], "Installer manifest firstRun")
+          verify_manifest_signature(
+              installed,
+              "installer",
+              "installer-update-manifest.json",
+          )
+
+          if paths[portable_archive].stat().st_size != portable["archiveBytes"]:
+              raise SystemExit("Portable ZIP size differs from the portable manifest.")
+          if assets[portable_archive]["size"] != portable["archiveBytes"]:
+              raise SystemExit("Portable ZIP size differs from GitHub metadata.")
+          if paths[installer].stat().st_size != installed["installerBytes"]:
+              raise SystemExit("Installer EXE size differs from the installer manifest.")
+          if assets[installer]["size"] != installed["installerBytes"]:
+              raise SystemExit("Installer EXE size differs from GitHub metadata.")
+
+          hash_cache = {}
+
+          def file_sha256(name):
+              if name not in hash_cache:
+                  digest = hashlib.sha256()
+                  with paths[name].open("rb") as handle:
+                      for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                          digest.update(chunk)
+                  hash_cache[name] = digest.hexdigest()
+              return hash_cache[name]
+
+          def verify_checksum(checksum_name, artifact_name, declared_hash):
+              try:
+                  contents = read_small(
+                      paths[checksum_name], MAX_CHECKSUM_BYTES, checksum_name
+                  ).decode("utf-8")
+              except UnicodeDecodeError as error:
+                  raise SystemExit(f"{checksum_name} is not UTF-8.") from error
+              match = re.fullmatch(
+                  r"([0-9a-f]{64})[ \t]+\*?([^\r\n]+)\r?\n?",
+                  contents,
+              )
+              if match is None or match.group(2) != artifact_name:
+                  raise SystemExit(f"{checksum_name} has an invalid strict checksum record.")
+              actual_hash = file_sha256(artifact_name)
+              if match.group(1) != declared_hash or actual_hash != declared_hash:
+                  raise SystemExit(
+                      f"{artifact_name} hash differs from its manifest or checksum asset."
+                  )
+              return actual_hash
+
+          portable_hash = verify_checksum(
+              portable_checksum, portable_archive, portable["sha256"]
+          )
+          installer_hash = verify_checksum(
+              installer_checksum, installer, installed["sha256"]
+          )
+
+          for name, metadata in assets.items():
+              github_digest = metadata.get("digest")
+              if github_digest is not None and github_digest != f"sha256:{file_sha256(name)}":
+                  raise SystemExit(f"GitHub digest differs from downloaded asset: {name}")
+
+          with zipfile.ZipFile(paths[portable_archive]) as archive:
+              entries = archive.infolist()
+              if len(entries) > 100_000:
+                  raise SystemExit("Portable ZIP contains too many entries.")
+              if sum(entry.file_size for entry in entries) > MAX_UNPACKED_BYTES:
+                  raise SystemExit("Portable ZIP expands beyond the allowed size.")
+              names = []
+              private_pattern = re.compile(
+                  r"(^|/)(?:User Data|UserData|profiles?|runtime-data|"
+                  r"generated-images|logs|Cookies|Login Data|Local State|"
+                  r"ai-settings\.json|account-registry\.json|media-index\.json|"
+                  r"publish-jobs\.json|jobs\.json|[^/]*\.sqlite(?:-[^/]*)?|"
+                  r"[^/]*\.db(?:-[^/]*)?)(?:$|/)",
+                  re.IGNORECASE,
+              )
+              for entry in entries:
+                  name = entry.filename.replace("\\", "/")
+                  parts = name.split("/")
+                  if (
+                      name.startswith("/")
+                      or re.match(r"^[A-Za-z]:", name)
+                      or ".." in parts
+                  ):
+                      raise SystemExit(f"Portable ZIP contains an unsafe path: {name}")
+                  unix_mode = entry.external_attr >> 16
+                  if stat.S_ISLNK(unix_mode):
+                      raise SystemExit(f"Portable ZIP contains a symbolic link: {name}")
+                  if entry.flag_bits & 0x1:
+                      raise SystemExit(f"Portable ZIP contains an encrypted entry: {name}")
+                  if private_pattern.search(name):
+                      raise SystemExit(f"Portable ZIP contains a private-data path: {name}")
+                  names.append(name)
+              if not any(name == "XHS-FB.exe" or name.endswith("/XHS-FB.exe") for name in names):
+                  raise SystemExit("Portable ZIP does not contain XHS-FB.exe.")
+              browser_suffix = "resources/browser/chrome.exe"
+              if not any(
+                  name == browser_suffix or name.endswith(f"/{browser_suffix}")
+                  for name in names
+              ):
+                  raise SystemExit("Portable ZIP does not contain the bundled browser.")
+              corrupt_entry = archive.testzip()
+              if corrupt_entry is not None:
+                  raise SystemExit(f"Portable ZIP has a corrupt entry: {corrupt_entry}")
+
+          with paths[installer].open("rb") as handle:
+              if handle.read(2) != b"MZ":
+                  raise SystemExit("Installer asset is not a Windows PE executable.")
+
+          print(f"Verified Release {release_tag} with exactly six approved assets.")
+          print(f"Portable SHA-256: {portable_hash}")
+          print(f"Installer SHA-256: {installer_hash}")
